@@ -2,7 +2,7 @@ import shutil
 import time
 import webbrowser
 
-from requests import get, post, Response
+from requests import Response, get, post
 
 STAGING_FOLDER = "\\\\hesp-staging.frituur\\config\\custom_components\\powertag_gateway"
 

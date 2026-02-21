@@ -1,27 +1,31 @@
-import asyncio
 import inspect
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_INTERNAL_URL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity, DeviceInfo
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.entity import DeviceInfo, Entity
 
 from . import UniqueIdVersion
-from .const import CONF_CLIENT, DOMAIN, CONF_DEVICE_UNIQUE_ID_VERSION
-from .const import GATEWAY_DOMAIN, TAG_DOMAIN
+from .const import (
+    CONF_CLIENT,
+    CONF_DEVICE_UNIQUE_ID_VERSION,
+    DOMAIN,
+    GATEWAY_DOMAIN,
+    TAG_DOMAIN,
+)
 from .device_features import (
     FeatureClass,
-    from_commercial_reference,
     UnknownDevice,
+    from_commercial_reference,
     from_wireless_device_type_code,
 )
 from .schneider_modbus import (
-    SchneiderModbus,
-    Phase,
     LineVoltage,
+    Phase,
     PhaseSequence,
+    SchneiderModbus,
     TypeOfGateway,
 )
 
@@ -213,7 +217,7 @@ def collect_entities(
             args.append(client)
         elif typey == DeviceInfo:
             args.append(tag_device)
-        elif typey == int:
+        elif typey is int:
             assert param[0] == "modbus_index"
             args.append(modbus_address)
         elif typey == FeatureClass:
@@ -232,7 +236,7 @@ def collect_entities(
             args.append(None)
         elif typey == UniqueIdVersion:
             args.append(device_unique_id_version)
-        elif typey == str:
+        elif typey is str:
             assert param[0] == "serial_number"
             args.append(tag_device["serial_number"])
         else:

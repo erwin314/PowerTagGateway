@@ -3,14 +3,15 @@
 import logging
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_INTERNAL_URL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory, DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.util import dt as dt_util
 
 from . import CONF_CLIENT, DOMAIN, UniqueIdVersion
@@ -22,10 +23,10 @@ from .entity_base import (
     gateway_device_info,
 )
 from .schneider_modbus import (
-    SchneiderModbus,
-    Phase,
     LineVoltage,
+    Phase,
     PowerFactorSignConvention,
+    SchneiderModbus,
     TypeOfGateway,
 )
 
@@ -1595,7 +1596,7 @@ class PowerTagCurrentNeutral(WirelessDeviceEntity, SensorEntity):
             client,
             modbus_index,
             tag_device,
-            f"current neutral",
+            "current neutral",
             unique_id_version,
             serial_number,
         )
@@ -1709,7 +1710,7 @@ class PowerTagFrequency(WirelessDeviceEntity, SensorEntity):
             client,
             modbus_index,
             tag_device,
-            f"frequency",
+            "frequency",
             unique_id_version,
             serial_number,
         )
@@ -1756,7 +1757,7 @@ class PowerTagTemperature(WirelessDeviceEntity, SensorEntity):
             client,
             modbus_index,
             tag_device,
-            f"temperature",
+            "temperature",
             unique_id_version,
             serial_number,
         )

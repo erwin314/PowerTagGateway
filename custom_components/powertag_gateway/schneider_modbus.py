@@ -4,11 +4,11 @@ import logging
 import math
 from datetime import datetime
 
-from pymodbus.client import ModbusTcpClient, AsyncModbusTcpClient  # type: ignore
-from pymodbus.constants import DeviceInformation  # type: ignore
-from pymodbus.pdu import ExceptionResponse  # type: ignore
+from pymodbus.client import AsyncModbusTcpClient  # type: ignore
 from pymodbus.client.mixin import ModbusClientMixin  # type: ignore
+from pymodbus.constants import DeviceInformation  # type: ignore
 from pymodbus.exceptions import ModbusIOException  # type: ignore
+from pymodbus.pdu import ExceptionResponse  # type: ignore
 
 GATEWAY_SLAVE_ID = 255
 SYNTHESIS_TABLE_SLAVE_ID_START = 247

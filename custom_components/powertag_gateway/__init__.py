@@ -4,16 +4,16 @@ import logging
 from enum import Enum, auto
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_INTERNAL_URL
+from homeassistant.const import CONF_HOST, CONF_INTERNAL_URL, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from pymodbus.exceptions import ConnectionException
 
 from .const import (
     CONF_CLIENT,
-    DOMAIN,
-    CONF_TYPE_OF_GATEWAY,
     CONF_DEVICE_UNIQUE_ID_VERSION,
+    CONF_TYPE_OF_GATEWAY,
+    DOMAIN,
 )
 from .schneider_modbus import SchneiderModbus, TypeOfGateway
 

@@ -9,24 +9,24 @@ from urllib.parse import urlparse
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_DEVICE, \
-    CONF_INTERNAL_URL
+from homeassistant.const import CONF_DEVICE, CONF_HOST, CONF_INTERNAL_URL, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from pymodbus.exceptions import ConnectionException
 
 from . import UniqueIdVersion
 from .const import (
-    DEFAULT_MODBUS_PORT,
+    CONF_DEVICE_UNIQUE_ID_VERSION,
     CONF_MANUAL_INPUT,
+    CONF_TYPE_OF_GATEWAY,
+    DEFAULT_MODBUS_PORT,
+    DOMAIN,
+    DPWS_FRIENDLY_NAME,
     DPWS_MODEL_NAME,
     DPWS_PRESENTATION_URL,
-    DPWS_FRIENDLY_NAME,
     DPWS_SERIAL_NUMBER,
-    DOMAIN, CONF_TYPE_OF_GATEWAY, CONF_DEVICE_UNIQUE_ID_VERSION
 )
-from .schneider_modbus import SchneiderModbus, TypeOfGateway, LinkStatus, \
-    PanelHealth
+from .schneider_modbus import LinkStatus, PanelHealth, SchneiderModbus, TypeOfGateway
 from .soap_communication import Soapy, dpws_discovery
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ async def async_discovery(hass: HomeAssistant) -> list[DiscoveredDevice]:
     if discovered_devices:
         _LOGGER.info(f"Found {[s.friendly_name for s in discovered_devices]}")
     else:
-        _LOGGER.info(f"Didn't find anything. Discovery might be turned off or the server isn't reachable.")
+        _LOGGER.info("Didn't find anything. Discovery might be turned off or the server isn't reachable.")
 
     return discovered_devices
 
