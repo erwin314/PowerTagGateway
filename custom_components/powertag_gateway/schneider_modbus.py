@@ -9,6 +9,7 @@ from pymodbus.client.mixin import ModbusClientMixin  # type: ignore
 from pymodbus.constants import DeviceInformation  # type: ignore
 from pymodbus.exceptions import ModbusIOException  # type: ignore
 from pymodbus.pdu import ExceptionResponse  # type: ignore
+from .device_features import FeatureClass
 
 GATEWAY_SLAVE_ID = 255
 SYNTHESIS_TABLE_SLAVE_ID_START = 247
@@ -1080,6 +1081,270 @@ class SchneiderModbus:
             return None
 
         return datetime(year, month, day, hour, minute, second, millisecond)
+
+    async def async_read_metrics(self, slave_id: int, feature_class: FeatureClass):
+        from .data_models import PowerTagData
+        data = PowerTagData()
+
+        # Gateway Status
+        if slave_id == GATEWAY_SLAVE_ID:
+            if self.type_of_gateway in [TypeOfGateway.POWERTAG_LINK, TypeOfGateway.SMARTLINK]:
+                 data.status = await self.status()
+            if self.type_of_gateway == TypeOfGateway.PANEL_SERVER:
+                 data.health = await self.health()
+            data.date_time = await self.date_time()
+            return data
+
+        # Check connectivity
+        if self.type_of_gateway in [TypeOfGateway.POWERTAG_LINK, TypeOfGateway.PANEL_SERVER]:
+            # Read connectivity and radio info in one block
+            # 0x79A8 (31144) to 0x79B9 (31161) = 18 registers
+            # 0x79A8: Radio communication valid (1)
+            # 0x79A9: Wireless communication valid (1)
+            # ... gap ...
+            # 0x79AF: PER gateway (2)
+            # 0x79B1: RSSI gateway (2)
+            # 0x79B3: LQI gateway (1)
+            # 0x79B4: PER tag (2)
+            # 0x79B6: RSSI tag (2)
+            # 0x79B8: LQI tag (1)
+
+            registers = await self.__async_read(0x79A8, 18, slave_id)
+            if registers:
+                data.radio_communication_valid = registers[0] != 0
+                data.wireless_communication_valid = registers[1] != 0
+
+                if not data.wireless_communication_valid:
+                    return data
+
+                data.radio_per_gateway = self.client.convert_from_registers(registers[7:9], ModbusClientMixin.DATATYPE.FLOAT32)
+                data.radio_rssi_inside_gateway = self.client.convert_from_registers(registers[9:11], ModbusClientMixin.DATATYPE.FLOAT32)
+                data.radio_lqi_gateway = registers[11]
+                data.radio_per_tag = self.client.convert_from_registers(registers[12:14], ModbusClientMixin.DATATYPE.FLOAT32)
+                data.radio_rssi_inside_tag = self.client.convert_from_registers(registers[14:16], ModbusClientMixin.DATATYPE.FLOAT32)
+                data.radio_lqi_tag = registers[16]
+
+                data.radio_per_maximum = data.radio_per_tag # Same address in doc/code?
+                data.radio_rssi_minimum = data.radio_rssi_inside_tag # Same address in doc/code?
+                data.radio_lqi_minimum = data.radio_lqi_tag # Same address in doc/code?
+
+        # Environmental Sensors
+        if feature_class in [FeatureClass.TEMP0, FeatureClass.TEMP1, FeatureClass.CO2]:
+             if self.type_of_gateway == TypeOfGateway.PANEL_SERVER:
+                 # Read from 0x0FA0 to 0x0FAF (16 registers)
+                 # 0x0FA0: Temp (2)
+                 # 0x0FA2: Temp Max (2)
+                 # 0x0FA4: Temp Min (2)
+                 # 0x0FA6: Humidity (2)
+                 # 0x0FA8: Hum Max (2)
+                 # 0x0FAA: Hum Min (2)
+                 # 0x0FAC: Reserved (2)
+                 # 0x0FAE: CO2 (2)
+
+                 registers = await self.__async_read(0x0FA0, 16, slave_id)
+                 if registers:
+                     if feature_class in [FeatureClass.TEMP0, FeatureClass.TEMP1, FeatureClass.CO2]:
+                        data.env_temperature = self.client.convert_from_registers(registers[0:2], ModbusClientMixin.DATATYPE.FLOAT32)
+                        data.env_temperature_maximum = self.client.convert_from_registers(registers[2:4], ModbusClientMixin.DATATYPE.FLOAT32)
+                        data.env_temperature_minimum = self.client.convert_from_registers(registers[4:6], ModbusClientMixin.DATATYPE.FLOAT32)
+
+                     if feature_class in [FeatureClass.TEMP1, FeatureClass.CO2]:
+                        data.env_humidity = self.client.convert_from_registers(registers[6:8], ModbusClientMixin.DATATYPE.FLOAT32)
+                        data.env_humidity_maximum = self.client.convert_from_registers(registers[8:10], ModbusClientMixin.DATATYPE.FLOAT32)
+                        data.env_humidity_minimum = self.client.convert_from_registers(registers[10:12], ModbusClientMixin.DATATYPE.FLOAT32)
+
+                     if feature_class in [FeatureClass.CO2]:
+                        data.env_co2 = self.client.convert_from_registers(registers[14:16], ModbusClientMixin.DATATYPE.FLOAT32)
+
+                 # Battery voltage is separate at 0x0CF3 (3315)
+                 if feature_class in [FeatureClass.TEMP1, FeatureClass.CO2]:
+                     data.env_battery_voltage = await self.env_battery_voltage(slave_id)
+
+                 # Alarms
+                 data.alarm = await self.tag_get_alarm(slave_id)
+
+                 return data
+
+        # PowerTag Energy Sensors
+        # We can read a large block from 0xBB7 (2999) to covers most measurements
+        # 0xBB7: Current A (2)
+        # ...
+        # 0xBF3: Active Power Total (2)
+        # ...
+        # 0xC0B: Power Factor Total (2)
+        # ...
+        # 0xC25: Frequency (2)
+        # ...
+        # 0xC3B: Device Temp (2)
+
+        # Read from 0xBB7 to 0xC3C (134 registers)
+        # This covers Current, Voltage, Power, Power Factor, Frequency, Temperature
+
+        # Max modbus read is usually 125 registers. We need to split.
+
+        # Block 1: Current, Voltage, Power Active, Power Reactive (Start 0xBB7, Count ~100)
+        # 0xBB7 (2999) to 0xC00 (3072) is 74 registers.
+        # Covers Current (A, B, C, N), Voltage (AB, BC, CA, AN, BN, CN), Active Power (A, B, C, Tot), Reactive Power (A, B, C, Tot), Apparent Power (A, B, C)
+
+        block1 = await self.__async_read(0xBB7, 74, slave_id)
+        if block1:
+            data.current_a = self.client.convert_from_registers(block1[0:2], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.current_b = self.client.convert_from_registers(block1[2:4], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.current_c = self.client.convert_from_registers(block1[4:6], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.current_neutral = self.client.convert_from_registers(block1[6:8], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Voltage starts at offset 20 (0xBCB - 0xBB7 = 20)
+            data.voltage_ab = self.client.convert_from_registers(block1[20:22], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.voltage_bc = self.client.convert_from_registers(block1[22:24], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.voltage_ca = self.client.convert_from_registers(block1[24:26], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.voltage_an = self.client.convert_from_registers(block1[28:30], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.voltage_bn = self.client.convert_from_registers(block1[30:32], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.voltage_cn = self.client.convert_from_registers(block1[32:34], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Active Power starts at offset 54 (0xBED - 0xBB7 = 54)
+            data.active_power_a = self.client.convert_from_registers(block1[54:56], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.active_power_b = self.client.convert_from_registers(block1[56:58], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.active_power_c = self.client.convert_from_registers(block1[58:60], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.active_power_total = self.client.convert_from_registers(block1[60:62], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Reactive Power starts at offset 62 (0xBF5 - 0xBB7 = 62)
+            data.reactive_power_a = self.client.convert_from_registers(block1[62:64], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.reactive_power_b = self.client.convert_from_registers(block1[64:66], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.reactive_power_c = self.client.convert_from_registers(block1[66:68], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.reactive_power_total = self.client.convert_from_registers(block1[68:70], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Apparent Power starts at offset 70 (0xBFD - 0xBB7 = 70)
+            data.apparent_power_a = self.client.convert_from_registers(block1[70:72], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.apparent_power_b = self.client.convert_from_registers(block1[72:74], ModbusClientMixin.DATATYPE.FLOAT32)
+
+        # Block 2: Apparent Power C/Tot, Power Factor, Frequency, Temp
+        # Start 0xC01 (3073) to 0xC3C (3132) = 60 registers
+        block2 = await self.__async_read(0xC01, 60, slave_id)
+        if block2:
+            data.apparent_power_c = self.client.convert_from_registers(block2[0:2], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.apparent_power_total = self.client.convert_from_registers(block2[2:4], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Power Factor starts at offset 4 (0xC05 - 0xC01 = 4)
+            data.power_factor_a = self.client.convert_from_registers(block2[4:6], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.power_factor_b = self.client.convert_from_registers(block2[6:8], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.power_factor_c = self.client.convert_from_registers(block2[8:10], ModbusClientMixin.DATATYPE.FLOAT32)
+            data.power_factor_total = self.client.convert_from_registers(block2[10:12], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            if feature_class == FeatureClass.R1:
+                # 0xC0D - 0xC01 = 12
+                pf_sign = block2[12]
+                if pf_sign != 0xFFFF:
+                    data.power_factor_sign_convention = PowerFactorSignConvention(pf_sign)
+
+            # Frequency starts at offset 36 (0xC25 - 0xC01 = 36)
+            data.frequency = self.client.convert_from_registers(block2[36:38], ModbusClientMixin.DATATYPE.FLOAT32)
+
+            # Temperature starts at offset 58 (0xC3B - 0xC01 = 58)
+            data.device_temperature = self.client.convert_from_registers(block2[58:60], ModbusClientMixin.DATATYPE.FLOAT32)
+
+        # Energy Data
+        # Legacy: 0xC83 (3203)
+        data.energy_active_delivered_plus_received_total = await self.tag_energy_active_delivered_plus_received_total(slave_id)
+        data.energy_active_delivered_plus_received_partial = await self.tag_energy_active_delivered_plus_received_partial(slave_id)
+
+        # New Zone Energy
+        # 0x1390 (5008) to 0x1560 (5472) - Huge range, need to split.
+        # Active Energy Partial: 0x1390 - 0x13C8 (56 registers)
+        if self.type_of_gateway != TypeOfGateway.SMARTLINK:
+            block_energy_active = await self.__async_read(0x1390, 56, slave_id)
+            if block_energy_active:
+                data.energy_active_delivered_partial = self.client.convert_from_registers(block_energy_active[0:4], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_delivered_total = self.client.convert_from_registers(block_energy_active[4:8], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_received_partial = self.client.convert_from_registers(block_energy_active[8:12], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_received_total = self.client.convert_from_registers(block_energy_active[12:16], ModbusClientMixin.DATATYPE.INT64)
+
+                # Phases... offset 40 (0x13B8 - 0x1390 = 40)
+                data.energy_active_delivered_partial_phase_a = self.client.convert_from_registers(block_energy_active[40:44], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_delivered_total_phase_a = self.client.convert_from_registers(block_energy_active[44:48], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_received_partial_phase_a = self.client.convert_from_registers(block_energy_active[48:52], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_active_received_total_phase_a = self.client.convert_from_registers(block_energy_active[52:56], ModbusClientMixin.DATATYPE.INT64)
+
+            # Reactive Energy Partial: 0x1438 - 0x1480 (72 registers)
+            block_energy_reactive = await self.__async_read(0x1438, 72, slave_id)
+            if block_energy_reactive:
+                data.energy_reactive_delivered_partial = self.client.convert_from_registers(block_energy_reactive[0:4], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_reactive_delivered_total = self.client.convert_from_registers(block_energy_reactive[4:8], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_reactive_received_total = self.client.convert_from_registers(block_energy_reactive[20:24], ModbusClientMixin.DATATYPE.INT64)
+
+                # Phase A
+                data.energy_reactive_delivered_partial_phase_a = self.client.convert_from_registers(block_energy_reactive[56:60], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_reactive_delivered_total_phase_a = self.client.convert_from_registers(block_energy_reactive[60:64], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_reactive_received_partial_phase_a = self.client.convert_from_registers(block_energy_reactive[64:68], ModbusClientMixin.DATATYPE.INT64)
+                data.energy_reactive_received_total_phase_a = self.client.convert_from_registers(block_energy_reactive[68:72], ModbusClientMixin.DATATYPE.INT64)
+
+            # Received Partial is at 0x1488 (separate from block above)
+            data.energy_reactive_received_partial = await self.tag_energy_reactive_received_partial(slave_id)
+
+            # Apparent Energy: 0x14F4 - ...
+            data.energy_apparent_partial = await self.tag_energy_apparent_partial(slave_id)
+            data.energy_apparent_total = await self.tag_energy_apparent_total(slave_id)
+
+        else: # SMARTLINK
+             data.energy_active_delivered_partial = await self.tag_energy_active_delivered_partial(slave_id)
+             data.energy_active_delivered_total = await self.tag_energy_active_delivered_total(slave_id)
+             data.energy_active_received_partial = await self.tag_energy_active_received_partial(slave_id)
+             data.energy_active_received_total = await self.tag_energy_active_received_total(slave_id)
+             data.energy_reactive_delivered_partial = await self.tag_energy_reactive_delivered_partial(slave_id)
+             data.energy_reactive_received_partial = await self.tag_energy_reactive_received_partial(slave_id)
+
+        # Demand
+        data.power_active_demand_total = await self.tag_power_active_demand_total(slave_id)
+        data.power_active_power_demand_total_maximum = await self.tag_power_active_power_demand_total_maximum(slave_id)
+        data.power_active_demand_total_maximum_timestamp = await self.tag_power_active_demand_total_maximum_timestamp(slave_id)
+
+        # Alarm & Diagnostics
+        # 0xCE1 - 0xCEF (15 registers)
+        # 0xCE1: Alarm valid (2)
+        # 0xCE3: Alarm (2)
+        # 0xCE5: Current A (2)
+        # 0xCE7: Current B (2)
+        # 0xCE9: Current C (2)
+        # 0xCEB: Load op time (2)
+        # 0xCED: Load op thresh (2)
+        # 0xCEF: Load op start (4)
+
+        block_diag = await self.__async_read(0xCE1, 18, slave_id)
+        if block_diag:
+             alarm_valid_int = self.client.convert_from_registers(block_diag[0:2], ModbusClientMixin.DATATYPE.UINT32)
+             if alarm_valid_int is not None:
+                 if self.type_of_gateway == TypeOfGateway.PANEL_SERVER:
+                     data.alarm_valid = AlarmDetails(alarm_valid_int)
+                 else:
+                     data.alarm_valid = (alarm_valid_int & 0b1) != 0
+
+             alarm_int = self.client.convert_from_registers(block_diag[2:4], ModbusClientMixin.DATATYPE.UINT32)
+             if alarm_int is not None:
+                 data.alarm = AlarmDetails(alarm_int)
+
+             data.current_at_voltage_loss_a = self.client.convert_from_registers(block_diag[4:6], ModbusClientMixin.DATATYPE.FLOAT32)
+             data.current_at_voltage_loss_b = self.client.convert_from_registers(block_diag[6:8], ModbusClientMixin.DATATYPE.FLOAT32)
+             data.current_at_voltage_loss_c = self.client.convert_from_registers(block_diag[8:10], ModbusClientMixin.DATATYPE.FLOAT32)
+
+             data.load_operating_time = self.client.convert_from_registers(block_diag[10:12], ModbusClientMixin.DATATYPE.UINT32)
+             data.load_operating_time_active_power_threshold = self.client.convert_from_registers(block_diag[12:14], ModbusClientMixin.DATATYPE.FLOAT32)
+
+             # Date time is tricky to parse from registers list without helper, but we have helper method __read_date_time which does it from address
+             # Re-implementing parsing logic here for optimization
+             year_raw = block_diag[14]
+             if year_raw != 0xFFFF:
+                 year = (year_raw & 0b0111_1111) + 2000
+                 day_month = block_diag[15]
+                 day = day_month & 0b0001_1111
+                 month = (day_month >> 8) & 0b0000_1111
+                 minute_hour = block_diag[16]
+                 minute = minute_hour & 0b0011_1111
+                 hour = (minute_hour >> 8) & 0b0001_1111
+                 second_millisecond = block_diag[17]
+                 second = math.floor(second_millisecond / 1000)
+                 millisecond = second_millisecond - second * 1000
+                 data.load_operating_time_start = datetime(year, month, day, hour, minute, second, millisecond)
+
+        return data
 
 # client = SchneiderModbus("192.168.1.114", TypeOfGateway.PANEL_SERVER)
 # print(client.modbus_address_of_node(99))

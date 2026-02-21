@@ -9,7 +9,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_INTERNAL_URL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -29,6 +29,7 @@ from .schneider_modbus import (
     SchneiderModbus,
     TypeOfGateway,
 )
+from .coordinator import PowerTagCoordinator
 
 PLATFORMS: list[str] = ["sensor"]
 
@@ -98,12 +99,13 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     presentation_url = data[CONF_INTERNAL_URL]
     client = data[CONF_CLIENT]
+    coordinator = data["coordinator"]
     gateway_device = await gateway_device_info(client, presentation_url)
     gateway_serial = await client.serial_number()
 
     entities.extend(
         [
-            GatewayTime(client, gateway_device, gateway_serial),
+            GatewayTime(coordinator, client, gateway_device, gateway_serial),
         ]
     )
 
@@ -115,14 +117,16 @@ class GatewayTime(GatewayEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(
-        self, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str
+        self, coordinator: PowerTagCoordinator, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str
     ):
-        super().__init__(client, tag_device, "datetime", serial_number)
+        super().__init__(coordinator, client, tag_device, "datetime", serial_number)
 
-    async def async_update(self):
-        raw_date = await self._client.date_time()
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        raw_date = self.coordinator.data.gateway_data.date_time
         if self._handle_availability(raw_date):
             self._attr_native_value = dt_util.as_utc(raw_date)
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_gateway(type_of_gateway: TypeOfGateway) -> bool:
@@ -140,6 +144,7 @@ class PowerTagTotalActiveEnergy(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -147,6 +152,7 @@ class PowerTagTotalActiveEnergy(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -155,12 +161,14 @@ class PowerTagTotalActiveEnergy(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_plus_received_total(
-            self._modbus_index
-        )
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_delivered_plus_received_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -196,6 +204,7 @@ class PowerTagReactivePower(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -203,6 +212,7 @@ class PowerTagReactivePower(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -211,10 +221,14 @@ class PowerTagReactivePower(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_power_reactive_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.reactive_power_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -244,6 +258,7 @@ class PowerTagReactivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -252,6 +267,7 @@ class PowerTagReactivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -261,10 +277,21 @@ class PowerTagReactivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_power_reactive(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.reactive_power_a
+            elif self.__phase == Phase.B:
+                value = data.reactive_power_b
+            elif self.__phase == Phase.C:
+                value = data.reactive_power_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -286,6 +313,7 @@ class PowerTagApparentPower(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -293,6 +321,7 @@ class PowerTagApparentPower(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -301,10 +330,14 @@ class PowerTagApparentPower(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_power_apparent_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.apparent_power_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -340,6 +373,7 @@ class PowerTagApparentPowerPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -348,6 +382,7 @@ class PowerTagApparentPowerPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -357,10 +392,21 @@ class PowerTagApparentPowerPerPhase(WirelessDeviceEntity, SensorEntity):
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_power_apparent(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.apparent_power_a
+            elif self.__phase == Phase.B:
+                value = data.apparent_power_b
+            elif self.__phase == Phase.C:
+                value = data.apparent_power_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -382,6 +428,7 @@ class PowerTagPowerFactor(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -390,6 +437,7 @@ class PowerTagPowerFactor(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -404,6 +452,8 @@ class PowerTagPowerFactor(WirelessDeviceEntity, SensorEntity):
         await super().async_added_to_hass()
 
         if self._feature_class == FeatureClass.R1:
+            # This one is tricky as it's a one-time read, maybe keep it direct or move to coordinator if needed repeatedly?
+            # For now keeping it direct as it seems static configuration
             convention = await self._client.tag_power_factor_sign_convention(
                 self._modbus_index
             )
@@ -412,10 +462,14 @@ class PowerTagPowerFactor(WirelessDeviceEntity, SensorEntity):
                     "Power factor sign convention": convention
                 }
 
-    async def async_update(self):
-        power_factor = await self._client.tag_power_factor_total(self._modbus_index)
-        if self._handle_availability(power_factor):
-            self._attr_native_value = power_factor * 100
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            power_factor = data.power_factor_total
+            if self._handle_availability(power_factor):
+                self._attr_native_value = power_factor * 100
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -451,6 +505,7 @@ class PowerTagPowerFactorPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -459,6 +514,7 @@ class PowerTagPowerFactorPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -480,12 +536,21 @@ class PowerTagPowerFactorPerPhase(WirelessDeviceEntity, SensorEntity):
                 "Power factor sign convention": convention
             }
 
-    async def async_update(self):
-        power_factor = await self._client.tag_power_factor(
-            self._modbus_index, self.__phase
-        )
-        if self._handle_availability(power_factor):
-            self._attr_native_value = power_factor * 100
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            power_factor = None
+            if self.__phase == Phase.A:
+                power_factor = data.power_factor_a
+            elif self.__phase == Phase.B:
+                power_factor = data.power_factor_b
+            elif self.__phase == Phase.C:
+                power_factor = data.power_factor_c
+
+            if self._handle_availability(power_factor):
+                self._attr_native_value = power_factor * 100
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -507,6 +572,7 @@ class PowerTagPartialActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -514,6 +580,7 @@ class PowerTagPartialActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -522,10 +589,14 @@ class PowerTagPartialActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_partial(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_delivered_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -559,6 +630,7 @@ class PowerTagTotalActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -566,6 +638,7 @@ class PowerTagTotalActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -574,10 +647,14 @@ class PowerTagTotalActiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_delivered_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -611,6 +688,7 @@ class PowerTagPartialActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -619,6 +697,7 @@ class PowerTagPartialActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -628,10 +707,21 @@ class PowerTagPartialActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_partial_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_active_delivered_partial_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_active_delivered_partial_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_active_delivered_partial_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -664,6 +754,7 @@ class PowerTagTotalActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorEnt
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -672,6 +763,7 @@ class PowerTagTotalActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorEnt
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -681,10 +773,21 @@ class PowerTagTotalActiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorEnt
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_total_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_active_delivered_total_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_active_delivered_total_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_active_delivered_total_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -717,6 +820,7 @@ class PowerTagPartialActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -724,6 +828,7 @@ class PowerTagPartialActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -732,10 +837,14 @@ class PowerTagPartialActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_received_partial(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_received_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -769,6 +878,7 @@ class PowerTagTotalActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -776,6 +886,7 @@ class PowerTagTotalActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -784,10 +895,14 @@ class PowerTagTotalActiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_received_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_received_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -821,6 +936,7 @@ class PowerTagPartialActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -829,6 +945,7 @@ class PowerTagPartialActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -838,10 +955,21 @@ class PowerTagPartialActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_received_partial_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_active_received_partial_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_active_received_partial_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_active_received_partial_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -874,6 +1002,7 @@ class PowerTagTotalActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEnti
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -882,6 +1011,7 @@ class PowerTagTotalActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEnti
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -891,10 +1021,21 @@ class PowerTagTotalActiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEnti
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_received_total_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_active_received_total_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_active_received_total_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_active_received_total_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -929,6 +1070,7 @@ class PowerTagPartialActiveEnergyDeliveredAndReceived(
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -936,6 +1078,7 @@ class PowerTagPartialActiveEnergyDeliveredAndReceived(
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -944,15 +1087,18 @@ class PowerTagPartialActiveEnergyDeliveredAndReceived(
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_active_delivered_plus_received_partial(self._modbus_index)
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_active_delivered_plus_received_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        if self._handle_availability(value):
-            self._attr_native_value = value
-
-        last_reset = await self._client.tag_load_operating_time_start(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_last_reset = last_reset
+            last_reset = data.load_operating_time_start
+            if self._handle_availability(value):
+                self._attr_last_reset = last_reset
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -981,6 +1127,7 @@ class PowerTagPartialReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity)
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -988,6 +1135,7 @@ class PowerTagPartialReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity)
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -996,10 +1144,14 @@ class PowerTagPartialReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity)
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_delivered_partial(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_reactive_delivered_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1028,6 +1180,7 @@ class PowerTagTotalReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1035,6 +1188,7 @@ class PowerTagTotalReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1043,10 +1197,14 @@ class PowerTagTotalReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_delivered_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_reactive_delivered_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1069,6 +1227,7 @@ class PowerTagPartialReactiveEnergyDeliveredPerPhase(
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1077,6 +1236,7 @@ class PowerTagPartialReactiveEnergyDeliveredPerPhase(
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1086,10 +1246,21 @@ class PowerTagPartialReactiveEnergyDeliveredPerPhase(
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_delivered_partial_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_reactive_delivered_partial_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_reactive_delivered_partial_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_reactive_delivered_partial_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1118,6 +1289,7 @@ class PowerTagTotalReactiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1126,6 +1298,7 @@ class PowerTagTotalReactiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1135,10 +1308,21 @@ class PowerTagTotalReactiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_delivered_total_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_reactive_delivered_total_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_reactive_delivered_total_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_reactive_delivered_total_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1167,6 +1351,7 @@ class PowerTagPartialReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1174,6 +1359,7 @@ class PowerTagPartialReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1182,10 +1368,14 @@ class PowerTagPartialReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_received_partial(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_reactive_received_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1214,6 +1404,7 @@ class PowerTagTotalReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1221,6 +1412,7 @@ class PowerTagTotalReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1229,10 +1421,14 @@ class PowerTagTotalReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_received_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_reactive_received_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1261,6 +1457,7 @@ class PowerTagPartialReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, Sensor
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1269,6 +1466,7 @@ class PowerTagPartialReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, Sensor
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1278,10 +1476,21 @@ class PowerTagPartialReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, Sensor
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_received_partial_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_reactive_received_partial_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_reactive_received_partial_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_reactive_received_partial_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1310,6 +1519,7 @@ class PowerTagTotalReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1318,6 +1528,7 @@ class PowerTagTotalReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1327,10 +1538,21 @@ class PowerTagTotalReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEn
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_reactive_received_total_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_reactive_received_total_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_reactive_received_total_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_reactive_received_total_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1360,6 +1582,7 @@ class PowerTagPartialApparentEnergy(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1367,6 +1590,7 @@ class PowerTagPartialApparentEnergy(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1375,10 +1599,14 @@ class PowerTagPartialApparentEnergy(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_apparent_partial(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_apparent_partial
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1400,6 +1628,7 @@ class PowerTagTotalApparentEnergy(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1407,6 +1636,7 @@ class PowerTagTotalApparentEnergy(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1415,10 +1645,14 @@ class PowerTagTotalApparentEnergy(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_energy_apparent_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.energy_apparent_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1440,6 +1674,7 @@ class PowerTagPartialApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1448,6 +1683,7 @@ class PowerTagPartialApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1457,10 +1693,21 @@ class PowerTagPartialApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_apparent_partial_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_apparent_partial_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_apparent_partial_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_apparent_partial_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1481,6 +1728,7 @@ class PowerTagTotalApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1489,6 +1737,7 @@ class PowerTagTotalApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1498,10 +1747,21 @@ class PowerTagTotalApparentEnergyPerPhase(WirelessDeviceEntity, SensorEntity):
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_energy_apparent_total_phase(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.energy_apparent_total_phase_a
+            elif self.__phase == Phase.B:
+                value = data.energy_apparent_total_phase_b
+            elif self.__phase == Phase.C:
+                value = data.energy_apparent_total_phase_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1522,6 +1782,7 @@ class PowerTagCurrent(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1530,6 +1791,7 @@ class PowerTagCurrent(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1547,10 +1809,21 @@ class PowerTagCurrent(WirelessDeviceEntity, SensorEntity):
             "Rated current": await self._client.tag_rated_current(self._modbus_index)
         }
 
-    async def async_update(self):
-        value = await self._client.tag_current(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.current_a
+            elif self.__phase == Phase.B:
+                value = data.current_b
+            elif self.__phase == Phase.C:
+                value = data.current_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1586,6 +1859,7 @@ class PowerTagCurrentNeutral(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1593,6 +1867,7 @@ class PowerTagCurrentNeutral(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1610,10 +1885,14 @@ class PowerTagCurrentNeutral(WirelessDeviceEntity, SensorEntity):
             "Rated current": await self._client.tag_rated_current(self._modbus_index)
         }
 
-    async def async_update(self):
-        value = await self._client.tag_current_neutral(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.current_neutral
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1635,6 +1914,7 @@ class PowerTagVoltage(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1643,6 +1923,7 @@ class PowerTagVoltage(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1661,10 +1942,27 @@ class PowerTagVoltage(WirelessDeviceEntity, SensorEntity):
         if rated_voltage:
             self._attr_extra_state_attributes = {"Rated voltage": rated_voltage}
 
-    async def async_update(self):
-        value = await self._client.tag_voltage(self._modbus_index, self.__line)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__line == LineVoltage.A_B:
+                value = data.voltage_ab
+            elif self.__line == LineVoltage.B_C:
+                value = data.voltage_bc
+            elif self.__line == LineVoltage.C_A:
+                value = data.voltage_ca
+            elif self.__line == LineVoltage.A_N:
+                value = data.voltage_an
+            elif self.__line == LineVoltage.B_N:
+                value = data.voltage_bn
+            elif self.__line == LineVoltage.C_N:
+                value = data.voltage_cn
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1700,6 +1998,7 @@ class PowerTagFrequency(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1707,6 +2006,7 @@ class PowerTagFrequency(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1715,10 +2015,14 @@ class PowerTagFrequency(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_ac_frequency(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.frequency
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1747,6 +2051,7 @@ class PowerTagTemperature(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1754,6 +2059,7 @@ class PowerTagTemperature(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1762,10 +2068,14 @@ class PowerTagTemperature(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_device_temperature(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.device_temperature
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1812,6 +2122,7 @@ class PowerTagActivePower(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1819,6 +2130,7 @@ class PowerTagActivePower(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1827,10 +2139,14 @@ class PowerTagActivePower(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_power_active_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.active_power_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1866,6 +2182,7 @@ class PowerTagActivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1874,6 +2191,7 @@ class PowerTagActivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1883,10 +2201,21 @@ class PowerTagActivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
         )
         self.__phase = phase
 
-    async def async_update(self):
-        value = await self._client.tag_power_active(self._modbus_index, self.__phase)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = None
+            if self.__phase == Phase.A:
+                value = data.active_power_a
+            elif self.__phase == Phase.B:
+                value = data.active_power_b
+            elif self.__phase == Phase.C:
+                value = data.active_power_c
+
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1920,6 +2249,7 @@ class PowerTagDemandActivePower(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1927,6 +2257,7 @@ class PowerTagDemandActivePower(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1935,19 +2266,19 @@ class PowerTagDemandActivePower(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_power_active_demand_total(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.power_active_demand_total
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Maximum demand active power (W)": await self._client.tag_power_active_power_demand_total_maximum(
-                self._modbus_index
-            ),
-            "Maximum demand active power timestamp": await self._client.tag_power_active_demand_total_maximum_timestamp(
-                self._modbus_index
-            ),
-        }
+            self._attr_extra_state_attributes = {
+                "Maximum demand active power (W)": data.power_active_power_demand_total_maximum,
+                "Maximum demand active power timestamp": data.power_active_demand_total_maximum_timestamp,
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -1970,6 +2301,7 @@ class EnvTagBatteryVoltage(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -1977,6 +2309,7 @@ class EnvTagBatteryVoltage(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -1985,10 +2318,14 @@ class EnvTagBatteryVoltage(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.env_battery_voltage(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.env_battery_voltage
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2006,6 +2343,7 @@ class EnvTagTemperature(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2013,6 +2351,7 @@ class EnvTagTemperature(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2033,10 +2372,14 @@ class EnvTagTemperature(WirelessDeviceEntity, SensorEntity):
             ),
         }
 
-    async def async_update(self):
-        value = await self._client.env_temperature(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.env_temperature
+            if self._handle_availability(value):
+                self._attr_native_value = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2058,6 +2401,7 @@ class EnvTagHumidity(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2065,6 +2409,7 @@ class EnvTagHumidity(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2090,10 +2435,14 @@ class EnvTagHumidity(WirelessDeviceEntity, SensorEntity):
         }
         self.async_write_ha_state()
 
-    async def async_update(self):
-        value = await self._client.env_humidity(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value * 100
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.env_humidity
+            if self._handle_availability(value):
+                self._attr_native_value = value * 100
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2111,6 +2460,7 @@ class EnvTagCO2(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2118,13 +2468,17 @@ class EnvTagCO2(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
-            client, modbus_index, tag_device, "CO2", unique_id_version, serial_number
+            coordinator, client, modbus_index, tag_device, "CO2", unique_id_version, serial_number
         )
 
-    async def async_update(self):
-        value = await self._client.env_co2(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value * 1000
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.env_co2
+            if self._handle_availability(value):
+                self._attr_native_value = value * 1000
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2143,6 +2497,7 @@ class DeviceRssiTag(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2150,6 +2505,7 @@ class DeviceRssiTag(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2158,14 +2514,18 @@ class DeviceRssiTag(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_radio_rssi_inside_tag(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_rssi_inside_tag
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Minimum": await self._client.tag_radio_rssi_minimum(self._modbus_index)
-        }
+            self._attr_extra_state_attributes = {
+                "Minimum": data.radio_rssi_minimum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2204,6 +2564,7 @@ class DeviceRssiGateway(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2211,6 +2572,7 @@ class DeviceRssiGateway(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2219,14 +2581,18 @@ class DeviceRssiGateway(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_radio_rssi_inside_gateway(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_rssi_inside_gateway
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Minimum": await self._client.tag_radio_rssi_minimum(self._modbus_index)
-        }
+            self._attr_extra_state_attributes = {
+                "Minimum": data.radio_rssi_minimum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2263,6 +2629,7 @@ class DeviceLqiTag(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2270,6 +2637,7 @@ class DeviceLqiTag(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2278,14 +2646,18 @@ class DeviceLqiTag(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_radio_lqi_tag(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_lqi_tag
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Minimum": await self._client.tag_radio_lqi_minimum(self._modbus_index)
-        }
+            self._attr_extra_state_attributes = {
+                "Minimum": data.radio_lqi_minimum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2322,6 +2694,7 @@ class DeviceLqiGateway(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2329,6 +2702,7 @@ class DeviceLqiGateway(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2337,14 +2711,18 @@ class DeviceLqiGateway(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_radio_lqi_gateway(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_lqi_gateway
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Minimum": await self._client.tag_radio_lqi_minimum(self._modbus_index)
-        }
+            self._attr_extra_state_attributes = {
+                "Minimum": data.radio_lqi_minimum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2381,6 +2759,7 @@ class DevicePerTag(WirelessDeviceEntity, SensorEntity):
 
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -2388,6 +2767,7 @@ class DevicePerTag(WirelessDeviceEntity, SensorEntity):
         serial_number: str,
     ):
         super().__init__(
+            coordinator,
             client,
             modbus_index,
             tag_device,
@@ -2396,14 +2776,18 @@ class DevicePerTag(WirelessDeviceEntity, SensorEntity):
             serial_number,
         )
 
-    async def async_update(self):
-        value = await self._client.tag_radio_per_tag(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_per_tag
+            if self._handle_availability(value):
+                self._attr_native_value = value
 
-        self._attr_extra_state_attributes = {
-            "Maximum": await self._client.tag_radio_per_maximum(self._modbus_index)
-        }
+            self._attr_extra_state_attributes = {
+                "Maximum": data.radio_per_maximum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -2438,16 +2822,20 @@ class DevicePerGateway(WirelessDeviceEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
-        super().__init__(client, modbus_index, tag_device, "packet error rate in gateway", unique_id_version, serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
+        super().__init__(coordinator, client, modbus_index, tag_device, "packet error rate in gateway", unique_id_version, serial_number)
 
-    async def async_update(self):
-        value = await self._client.tag_radio_per_gateway(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_native_value = value
-        self._attr_extra_state_attributes = {
-            "Maximum": await self._client.tag_radio_per_maximum(self._modbus_index)
-        }
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_per_gateway
+            if self._handle_availability(value):
+                self._attr_native_value = value
+            self._attr_extra_state_attributes = {
+                "Maximum": data.radio_per_maximum
+            }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:

@@ -6,7 +6,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_INTERNAL_URL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -19,6 +19,7 @@ from .entity_base import (
     gateway_device_info,
 )
 from .schneider_modbus import LinkStatus, PanelHealth, SchneiderModbus, TypeOfGateway
+from .coordinator import PowerTagCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,11 +44,12 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     presentation_url = data[CONF_INTERNAL_URL]
     client = data[CONF_CLIENT]
+    coordinator = data["coordinator"]
     gateway_device = await gateway_device_info(client, presentation_url)
     gateway_serial = await client.serial_number()
 
     entities.extend([gateway_entity for gateway_entity
-                     in [GatewayStatus(client, gateway_device, gateway_serial), GatewayHealth(client, gateway_device, gateway_serial)]
+                     in [GatewayStatus(coordinator, client, gateway_device, gateway_serial), GatewayHealth(coordinator, client, gateway_device, gateway_serial)]
                      if gateway_entity.supports_gateway(client.type_of_gateway)
                      ])
 
@@ -58,13 +60,17 @@ class PowerTagWirelessCommunicationValid(WirelessDeviceEntity, BinarySensorEntit
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
-    def __init__(self, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
-        super().__init__(client, modbus_index, tag_device, "wireless communication valid", unique_id_version, serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
+        super().__init__(coordinator, client, modbus_index, tag_device, "wireless communication valid", unique_id_version, serial_number)
 
-    async def async_update(self):
-        value = await self._client.tag_wireless_communication_valid(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_is_on = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.wireless_communication_valid
+            if self._handle_availability(value):
+                self._attr_is_on = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -82,13 +88,17 @@ class PowerTagRadioCommunicationValid(WirelessDeviceEntity, BinarySensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
-    def __init__(self, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
-        super().__init__(client, modbus_index, tag_device, "radio communication valid", unique_id_version, serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
+        super().__init__(coordinator, client, modbus_index, tag_device, "radio communication valid", unique_id_version, serial_number)
 
-    async def async_update(self):
-        value = await self._client.tag_radio_communication_valid(self._modbus_index)
-        if self._handle_availability(value):
-            self._attr_is_on = value
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            value = data.radio_communication_valid
+            if self._handle_availability(value):
+                self._attr_is_on = value
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -105,25 +115,29 @@ class PowerTagRadioCommunicationValid(WirelessDeviceEntity, BinarySensorEntity):
 class PowerTagAlarm(WirelessDeviceEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
-    def __init__(self, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
-        super().__init__(client, modbus_index, tag_device, "alarm info", unique_id_version, serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
+        super().__init__(coordinator, client, modbus_index, tag_device, "alarm info", unique_id_version, serial_number)
 
-    async def async_update(self):
-        alarm = await self._client.tag_get_alarm(self._modbus_index)
-        if self._handle_availability(alarm):
-            if alarm.has_alarm != self._attr_is_on:
-                self._attr_is_on = alarm.has_alarm
-                self._attr_extra_state_attributes = {
-                    "Voltage loss": alarm.voltage_loss,
-                    "Current overload when voltage loss": alarm.current_overload_when_voltage_loss,
-                    "Current short-circuit": alarm.current_short_circuit,
-                    "Overload 45%": alarm.current_overload_45_percent,
-                    "Load current loss": alarm.load_current_loss,
-                    "Overvoltage 120%": alarm.overvoltage_120_percent,
-                    "Undervoltage 80%": alarm.undervoltage_80_percent,
-                    "Current 50%": alarm.current_50_percent,
-                    "Current 80%": alarm.current_80_percent
-                }
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            alarm = data.alarm
+            if self._handle_availability(alarm):
+                if alarm.has_alarm != self._attr_is_on:
+                    self._attr_is_on = alarm.has_alarm
+                    self._attr_extra_state_attributes = {
+                        "Voltage loss": alarm.voltage_loss,
+                        "Current overload when voltage loss": alarm.current_overload_when_voltage_loss,
+                        "Current short-circuit": alarm.current_short_circuit,
+                        "Overload 45%": alarm.current_overload_45_percent,
+                        "Load current loss": alarm.load_current_loss,
+                        "Overvoltage 120%": alarm.overvoltage_120_percent,
+                        "Undervoltage 80%": alarm.undervoltage_80_percent,
+                        "Current 50%": alarm.current_50_percent,
+                        "Current 80%": alarm.current_80_percent
+                    }
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -139,13 +153,17 @@ class PowerTagAlarm(WirelessDeviceEntity, BinarySensorEntity):
 class AmbientTagAlarm(WirelessDeviceEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
-    def __init__(self, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
-        super().__init__(client, modbus_index, tag_device, "battery", unique_id_version, serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, modbus_index: int, tag_device: DeviceInfo, unique_id_version: UniqueIdVersion, serial_number: str):
+        super().__init__(coordinator, client, modbus_index, tag_device, "battery", unique_id_version, serial_number)
 
-    async def async_update(self):
-        alarm = await self._client.tag_get_alarm(self._modbus_index)
-        if self._handle_availability(alarm):
-            self._attr_is_on = alarm.has_alarm
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data = self.coordinator.data.devices_data.get(self._modbus_index)
+        if data:
+            alarm = data.alarm
+            if self._handle_availability(alarm):
+                self._attr_is_on = alarm.has_alarm
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -160,12 +178,13 @@ class GatewayStatus(GatewayEntity, BinarySensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
-    def __init__(self, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str):
-        super().__init__(client, tag_device, "status", serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str):
+        super().__init__(coordinator, client, tag_device, "status", serial_number)
         self._attr_extra_state_attributes = {}
 
-    async def async_update(self):
-        status = await self._client.status()
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        status = self.coordinator.data.gateway_data.status
         if self._handle_availability(status):
             self._attr_is_on = status != LinkStatus.OPERATING
 
@@ -178,6 +197,7 @@ class GatewayStatus(GatewayEntity, BinarySensorEntity):
                 LinkStatus.RAM_ERROR: "RAM error",
                 LinkStatus.GENERAL_FAILURE: "General failure"
             }[status]
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -194,12 +214,13 @@ class GatewayHealth(GatewayEntity, BinarySensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
-    def __init__(self, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str):
-        super().__init__(client, tag_device, "health", serial_number)
+    def __init__(self, coordinator: PowerTagCoordinator, client: SchneiderModbus, tag_device: DeviceInfo, serial_number: str):
+        super().__init__(coordinator, client, tag_device, "health", serial_number)
         self._attr_extra_state_attributes = {}
 
-    async def async_update(self):
-        status = await self._client.health()
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        status = self.coordinator.data.gateway_data.health
         if self._handle_availability(status):
             self._attr_is_on = status != PanelHealth.NOMINAL
 
@@ -208,6 +229,7 @@ class GatewayHealth(GatewayEntity, BinarySensorEntity):
                 PanelHealth.DEGRADED: "Degraded",
                 PanelHealth.OUT_OF_ORDER: "Out of order"
             }[status]
+        self.async_write_ha_state()
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
