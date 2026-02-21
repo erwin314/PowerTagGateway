@@ -1340,7 +1340,7 @@ class SchneiderModbus:
                  minute = minute_hour & 0b0011_1111
                  hour = (minute_hour >> 8) & 0b0001_1111
                  second_millisecond = block_diag[17]
-                 second = math.floor(second_millisecond / 1000)
+                 second = second_millisecond // 1000
                  millisecond = second_millisecond - second * 1000
                  data.load_operating_time_start = datetime(year, month, day, hour, minute, second, millisecond)
 

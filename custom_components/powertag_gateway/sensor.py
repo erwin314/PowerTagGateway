@@ -1121,7 +1121,7 @@ class PowerTagPartialActiveEnergyDeliveredAndReceived(
 
 
 class PowerTagPartialReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
@@ -1174,7 +1174,7 @@ class PowerTagPartialReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity)
 
 
 class PowerTagTotalReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -1221,7 +1221,7 @@ class PowerTagTotalReactiveEnergyDelivered(WirelessDeviceEntity, SensorEntity):
 class PowerTagPartialReactiveEnergyDeliveredPerPhase(
     WirelessDeviceEntity, SensorEntity
 ):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
@@ -1283,7 +1283,7 @@ class PowerTagPartialReactiveEnergyDeliveredPerPhase(
 
 
 class PowerTagTotalReactiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -1345,7 +1345,7 @@ class PowerTagTotalReactiveEnergyDeliveredPerPhase(WirelessDeviceEntity, SensorE
 
 
 class PowerTagPartialReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
@@ -1398,7 +1398,7 @@ class PowerTagPartialReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
 
 class PowerTagTotalReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -1451,7 +1451,7 @@ class PowerTagTotalReactiveEnergyReceived(WirelessDeviceEntity, SensorEntity):
 
 
 class PowerTagPartialReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
@@ -1513,7 +1513,7 @@ class PowerTagPartialReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, Sensor
 
 
 class PowerTagTotalReactiveEnergyReceivedPerPhase(WirelessDeviceEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.REACTIVE_ENERGY
+    _attr_device_class = "reactive_energy"
     _attr_native_unit_of_measurement = "VARh"
     _attr_state_class = SensorStateClass.TOTAL
 
@@ -2221,6 +2221,7 @@ class PowerTagActivePowerPerPhase(WirelessDeviceEntity, SensorEntity):
     def supports_feature_set(feature_class: FeatureClass) -> bool:
         return feature_class in [
             FeatureClass.A1,
+            FeatureClass.A1, # Duplicate?
             FeatureClass.P1,
             FeatureClass.F1,
             FeatureClass.F3,

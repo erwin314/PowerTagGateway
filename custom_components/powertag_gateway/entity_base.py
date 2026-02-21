@@ -151,6 +151,11 @@ class GatewayEntity(CoordinatorEntity):
 
         self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{sensor_name}"
 
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return super().available and self._attr_available
+
     @staticmethod
     def supports_gateway(type_of_gateway: TypeOfGateway) -> bool:
         raise NotImplementedError()
@@ -182,6 +187,11 @@ class WirelessDeviceEntity(CoordinatorEntity):
             self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{entity_name}{self._modbus_index}"
         else:
             self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{entity_name}"
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return super().available and self._attr_available
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
