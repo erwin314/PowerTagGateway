@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
 )
 from .schneider_modbus import SchneiderModbus, TypeOfGateway
+from .coordinator import PowerTagCoordinator
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR]
 
@@ -52,10 +53,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except ConnectionException as e:
         raise ConfigEntryNotReady from e
 
+    coordinator = PowerTagCoordinator(hass, client)
+
+    # Discover devices once
+    await coordinator.async_discover_devices()
+
+    # Perform initial refresh to get data for all discovered devices
+    await coordinator.async_config_entry_first_refresh()
+
     hass.data[DOMAIN][entry.entry_id] = {
         CONF_CLIENT: client,
         CONF_INTERNAL_URL: presentation_url,
         CONF_DEVICE_UNIQUE_ID_VERSION: unique_id_version,
+        "coordinator": coordinator
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

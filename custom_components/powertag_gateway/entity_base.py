@@ -5,7 +5,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_INTERNAL_URL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import UniqueIdVersion
 from .const import (
@@ -28,6 +29,7 @@ from .schneider_modbus import (
     SchneiderModbus,
     TypeOfGateway,
 )
+from .coordinator import PowerTagCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,15 +140,21 @@ def phase_sequence_to_line_voltages(
         )
 
 
-class GatewayEntity(Entity):
+class GatewayEntity(CoordinatorEntity):
     def __init__(
-        self, client: SchneiderModbus, tag_device: DeviceInfo, sensor_name: str, serial_number: str
+        self, coordinator: PowerTagCoordinator, client: SchneiderModbus, tag_device: DeviceInfo, sensor_name: str, serial_number: str
     ):
+        super().__init__(coordinator)
         self._client = client
         self._attr_device_info = tag_device
         self._attr_name = f"{tag_device['name']} {sensor_name}"
 
         self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{sensor_name}"
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return super().available and self._attr_available
 
     @staticmethod
     def supports_gateway(type_of_gateway: TypeOfGateway) -> bool:
@@ -157,9 +165,10 @@ class GatewayEntity(Entity):
         return self._attr_available
 
 
-class WirelessDeviceEntity(Entity):
+class WirelessDeviceEntity(CoordinatorEntity):
     def __init__(
         self,
+        coordinator: PowerTagCoordinator,
         client: SchneiderModbus,
         modbus_index: int,
         tag_device: DeviceInfo,
@@ -167,6 +176,7 @@ class WirelessDeviceEntity(Entity):
         unique_id_version: UniqueIdVersion,
         serial_number: str
     ):
+        super().__init__(coordinator)
         self._client = client
         self._modbus_index = modbus_index
 
@@ -177,6 +187,11 @@ class WirelessDeviceEntity(Entity):
             self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{entity_name}{self._modbus_index}"
         else:
             self._attr_unique_id = f"{TAG_DOMAIN}{serial_number}{entity_name}"
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return super().available and self._attr_available
 
     @staticmethod
     def supports_feature_set(feature_class: FeatureClass) -> bool:
@@ -196,8 +211,9 @@ class WirelessDeviceEntity(Entity):
 
 
 def collect_entities(
+    coordinator: PowerTagCoordinator,
     client: SchneiderModbus,
-    entities: list[Entity],
+    entities: list[CoordinatorEntity],
     feature_class: FeatureClass,
     modbus_address: int,
     powertag_entity: type[WirelessDeviceEntity],
@@ -213,7 +229,9 @@ def collect_entities(
     enumerate_param = None
     for param in params:
         typey = param[1].annotation
-        if typey == SchneiderModbus:
+        if typey == PowerTagCoordinator:
+            args.append(coordinator)
+        elif typey == SchneiderModbus:
             args.append(client)
         elif typey == DeviceInfo:
             args.append(tag_device)
@@ -260,6 +278,7 @@ async def async_setup_entities(
     client = data[CONF_CLIENT]
     presentation_url = data[CONF_INTERNAL_URL]
     device_unique_id_version = data[CONF_DEVICE_UNIQUE_ID_VERSION]
+    coordinator = data["coordinator"]
 
     entities = []
     gateway_device = await gateway_device_info(client, presentation_url)
@@ -276,58 +295,11 @@ async def async_setup_entities(
         serial_number=gateway_device.get("serial_number"),
     )
 
-    _LOGGER.debug("Starting to scan for devices...")
-    for i in range(1, 100):
-        modbus_address = await client.modbus_address_of_node(i)
-        _LOGGER.debug(f"Found device #{i} at address {modbus_address}")
+    _LOGGER.debug("Starting entity creation for already discovered devices...")
 
-        if modbus_address is None:
-            if client.type_of_gateway == TypeOfGateway.PANEL_SERVER:
-                # PanelServers can have out of order devices, so make sure to just scan everything
-                continue
-            else:
-                break
-
-        if client.type_of_gateway == TypeOfGateway.SMARTLINK:
-            identifier = await client.tag_product_identifier(modbus_address)
-            if identifier is None:
-                break
-
-            _LOGGER.debug(
-                f"Found device #{modbus_address} to have product wireless device type code {identifier}"
-            )
-
-            try:
-                feature_class = from_wireless_device_type_code(identifier)
-            except UnknownDevice:
-                _LOGGER.error(
-                    f"I don't know what this product identifier is: {identifier}, but we can fix this! :) "
-                    f"Please create a GitHub issue and tell me model of the {modbus_address}th wireless "
-                    f"device."
-                )
-                continue
-
-        else:
-            commercial_reference = await client.tag_product_code(modbus_address)
-
-            _LOGGER.debug(f"Device #{modbus_address} is {commercial_reference}")
-
-            try:
-                feature_class = from_commercial_reference(commercial_reference)
-            except UnknownDevice:
-                _LOGGER.error(
-                    f"Unsupported wireless device: {commercial_reference}, "
-                    f"to request support, please create a GitHub issue for this device."
-                )
-                continue
-
-        if client.type_of_gateway is not TypeOfGateway.SMARTLINK:
-            is_disabled = await client.tag_radio_lqi_gateway(modbus_address) is None
-            if is_disabled:
-                _LOGGER.warning(
-                    f"The device {await client.tag_name(modbus_address)} is not reachable; will ignore this one."
-                )
-                continue
+    # Iterate over devices already discovered by the coordinator
+    for modbus_address, feature_class in coordinator.monitored_devices.items():
+        _LOGGER.debug(f"Creating entities for device #{modbus_address}")
 
         tag_device = await tag_device_info(
             client,
@@ -352,6 +324,7 @@ async def async_setup_entities(
             and entity.supports_firmware_version(tag_device["sw_version"])
         ]:
             collect_entities(
+                coordinator,
                 client,
                 entities,
                 feature_class,
@@ -363,4 +336,5 @@ async def async_setup_entities(
             )
 
         _LOGGER.info(f"Done with device at address {modbus_address}: {device_name}")
+
     return entities
